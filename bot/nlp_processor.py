@@ -213,6 +213,19 @@ class NLPProcessor:
                 print(f"Generated month/year count query: {sql}")
                 return sql
 
+        # Handle queries about distinct creators with videos above a views threshold
+        if "креатор" in query_lower and "разных" in query_lower and "просмотр" in query_lower:
+            threshold_match = re.search(r'больше\s+(\d+[\s\d]*)\s+просмотров', query_lower)
+            if threshold_match:
+                threshold_str = threshold_match.group(1).replace(' ', '')
+                threshold = int(threshold_str)
+            else:
+                threshold = 100000
+
+            sql = f"SELECT COUNT(DISTINCT creator_id) FROM videos WHERE views_count > {threshold}"
+            print(f"Generated distinct creators threshold query: {sql}")
+            return sql
+
         # Handle creator_id queries with thresholds
         creator_id_pattern = r'id\s+([a-f0-9]{32})'
         creator_match = re.search(creator_id_pattern, user_query.lower())
@@ -220,6 +233,39 @@ class NLPProcessor:
         if creator_match:
             creator_id = creator_match.group(1)
             query_lower = user_query.lower()
+
+            # Handle queries about number of calendar days in a month when creator published videos
+            if "календар" in query_lower and ("дня" in query_lower or "дней" in query_lower or "днях" in query_lower):
+                # Detect month and year in any common Russian case (ноября, ноябре, etc.)
+                month_year_pattern_any = r"(январ[ьяе]|феврал[ьяе]|март[ае]?|апрел[ьяе]|ма[яе]|июн[ьяе]|июл[ьяе]|август[ае]?|сентябр[ьяе]|октябр[ьяе]|ноябр[ьяе]|декабр[ьяе])\s+(\d{4})"
+                my_match = re.search(month_year_pattern_any, query_lower)
+                if my_match:
+                    month_word, year = my_match.groups()
+                    month_map_any = {
+                        'января': 1, 'январе': 1,
+                        'февраля': 2, 'феврале': 2,
+                        'марта': 3, 'марте': 3,
+                        'апреля': 4, 'апреле': 4,
+                        'мая': 5, 'мае': 5,
+                        'июня': 6, 'июне': 6,
+                        'июля': 7, 'июле': 7,
+                        'августа': 8, 'августе': 8,
+                        'сентября': 9, 'сентябре': 9,
+                        'октября': 10, 'октябре': 10,
+                        'ноября': 11, 'ноябре': 11,
+                        'декабря': 12, 'декабре': 12,
+                    }
+                    month_num = month_map_any.get(month_word)
+                    if month_num is not None:
+                        sql = (
+                            "SELECT COUNT(DISTINCT DATE(video_created_at)) "
+                            "FROM videos "
+                            f"WHERE creator_id = '{creator_id}' "
+                            f"AND EXTRACT(YEAR FROM video_created_at) = {year} "
+                            f"AND EXTRACT(MONTH FROM video_created_at) = {month_num}"
+                        )
+                        print(f"Generated creator calendar days in month query: {sql}")
+                        return sql
 
             # Handle single date + time range queries for snapshots deltas
             single_date = self._parse_single_date(query_lower)
@@ -279,8 +325,8 @@ class NLPProcessor:
 
         # If not a test query, try OpenAI (but handle rate limits gracefully)
         if self.client is None:
-            print("OpenAI client not available - using fallback")
-            return None
+            print("OpenAI client not available - using fallback rules")
+            return self._get_fallback_sql(user_query)
 
         try:
             system_prompt = self.get_system_prompt()
@@ -385,6 +431,17 @@ class NLPProcessor:
             if "просмотров" in query_lower:
                 return "SELECT COUNT(*) FROM video_snapshots WHERE delta_views_count < 0"
 
+        # Distinct creators with videos above a views threshold
+        if "креатор" in query_lower and "разных" in query_lower and "просмотр" in query_lower:
+            threshold_match = re.search(r'больше\s+(\d+[\s\d]*)\s+просмотров', query_lower)
+            if threshold_match:
+                threshold_str = threshold_match.group(1).replace(' ', '')
+                threshold = int(threshold_str)
+            else:
+                threshold = 100000
+
+            return f"SELECT COUNT(DISTINCT creator_id) FROM videos WHERE views_count > {threshold}"
+
         # General patterns for common queries
         if "сколько всего видео" in query_lower or "total videos" in query_lower:
             return "SELECT COUNT(*) FROM videos"
@@ -472,12 +529,7 @@ class NLPProcessor:
         """
         print(f"Processing query: {user_query}")
 
-        # Check if client is available
-        if self.client is None:
-            print("OpenAI client not available")
-            return None
-
-        # Generate SQL from natural language
+        # Generate SQL from natural language (LLM + rule-based fallbacks)
         sql_query = self.generate_sql_query(user_query)
         if not sql_query:
             print("Failed to generate SQL query")
