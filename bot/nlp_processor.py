@@ -111,6 +111,14 @@ class NLPProcessor:
                 print(f"Using test query mapping: {test_query} -> {sql}")
                 return sql
 
+        # Handle negative delta queries (snapshots with negative views change)
+        query_lower = user_query.lower()
+        if ("отрицательным" in query_lower or "отрицательное" in query_lower) and ("замер" in query_lower or "снапшот" in query_lower or "статистик" in query_lower):
+            if "delta_views_count" in query_lower or "просмотров" in query_lower:
+                sql = "SELECT COUNT(*) FROM video_snapshots WHERE delta_views_count < 0"
+                print(f"Generated negative delta query: {sql}")
+                return sql
+
         # Handle creator_id queries with thresholds
         import re
         creator_id_pattern = r'id\s+([a-f0-9]{32})'
@@ -240,6 +248,11 @@ class NLPProcessor:
                 return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND views_count > {threshold}"
             else:
                 return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}'"
+
+        # Handle negative delta queries
+        if ("отрицательным" in query_lower or "отрицательное" in query_lower) and ("замер" in query_lower or "снапшот" in query_lower or "статистик" in query_lower):
+            if "просмотров" in query_lower:
+                return "SELECT COUNT(*) FROM video_snapshots WHERE delta_views_count < 0"
 
         if "сколько всего видео" in query_lower or "total videos" in query_lower:
             return "SELECT COUNT(*) FROM videos"
