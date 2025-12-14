@@ -3,9 +3,27 @@ Natural Language Query Processor using OpenAI GPT
 """
 
 import json
-from typing import Optional, Dict, Any
+import re
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, Tuple
 from openai import OpenAI
 from config.settings import settings
+
+
+MONTHS_GENITIVE = {
+    'января': '01', 'февраля': '02', 'марта': '03', 'апреля': '04',
+    'мая': '05', 'июня': '06', 'июля': '07', 'августа': '08',
+    'сентября': '09', 'октября': '10', 'ноября': '11', 'декабря': '12'
+}
+MONTHS_PATTERN = '|'.join(MONTHS_GENITIVE.keys())
+
+METRIC_KEYWORDS = {
+    'просмотр': 'delta_views_count',
+    'лайк': 'delta_likes_count',
+    'комментар': 'delta_comments_count',
+    'жалоб': 'delta_reports_count',
+    'репорт': 'delta_reports_count'
+}
 
 
 class NLPProcessor:
@@ -25,6 +43,57 @@ class NLPProcessor:
                 # Last resort - create a mock client for testing
                 self.client = None
                 print("Warning: OpenAI client not available - bot will return error messages")
+
+    def _parse_single_date(self, text: str) -> Optional[str]:
+        """Parse Russian date like '28 ноября 2025' and return YYYY-MM-DD"""
+        date_pattern = rf'(\d{{1,2}})\s+({MONTHS_PATTERN})\s+(\d{{4}})(?:\s+года)?'
+        match = re.search(date_pattern, text)
+        if not match:
+            return None
+
+        day, month_name, year = match.groups()
+        month = MONTHS_GENITIVE.get(month_name)
+        if not month:
+            return None
+        return f"{year}-{month}-{int(day):02d}"
+
+    def _parse_time_range(self, text: str) -> Optional[Tuple[int, int, int, int]]:
+        """Parse time range like 'с 10:00 до 15:00' returning (h1, m1, h2, m2)"""
+        time_pattern = r'с\s*(\d{1,2}):(\d{2})\s*(?:до|по)\s*(\d{1,2}):(\d{2})'
+        match = re.search(time_pattern, text)
+        if not match:
+            return None
+
+        h1, m1, h2, m2 = map(int, match.groups())
+        return h1, m1, h2, m2
+
+    def _build_datetime_range(self, date_str: str, time_range: Tuple[int, int, int, int]) -> Tuple[str, str]:
+        """Return ISO datetime boundaries (start inclusive, end exclusive) for given date/time range."""
+        h1, m1, h2, m2 = time_range
+        base_date = datetime.strptime(date_str, "%Y-%m-%d")
+        start_dt = base_date.replace(hour=h1, minute=m1, second=0)
+        end_dt = base_date.replace(hour=h2, minute=m2, second=0)
+
+        if end_dt <= start_dt:
+            end_dt += timedelta(days=1)
+
+        fmt = "%Y-%m-%d %H:%M:%S+00:00"
+        return start_dt.strftime(fmt), end_dt.strftime(fmt)
+
+    def _detect_metric_column(self, text: str, default: str = "delta_views_count") -> str:
+        """Detect which metric column should be used based on keywords in the text."""
+        for keyword, column in METRIC_KEYWORDS.items():
+            if keyword in text:
+                return column
+
+        if "лайков" in text:
+            return "delta_likes_count"
+        if "комментар" in text:
+            return "delta_comments_count"
+        if "жалоб" in text or "репорт" in text:
+            return "delta_reports_count"
+
+        return default
 
     def get_schema_description(self) -> str:
         """Return database schema description for the LLM"""
@@ -120,7 +189,6 @@ class NLPProcessor:
                 return sql
 
         # Handle month/year queries: "в июне 2025 года"
-        import re
         month_year_pattern = r'в\s+(январе|феврале|марте|апреле|мае|июне|июле|августе|сентябре|октябре|ноябре|декабре)\s+(\d{4})\s+года'
         month_year_match = re.search(month_year_pattern, query_lower)
         
@@ -146,14 +214,30 @@ class NLPProcessor:
                 return sql
 
         # Handle creator_id queries with thresholds
-        import re
         creator_id_pattern = r'id\s+([a-f0-9]{32})'
         creator_match = re.search(creator_id_pattern, user_query.lower())
         
         if creator_match:
             creator_id = creator_match.group(1)
             query_lower = user_query.lower()
-            
+
+            # Handle single date + time range queries for snapshots deltas
+            single_date = self._parse_single_date(query_lower)
+            time_range = self._parse_time_range(query_lower)
+            if single_date and time_range and ("просмотр" in query_lower or "delta" in query_lower or "прирост" in query_lower):
+                start_iso, end_iso = self._build_datetime_range(single_date, time_range)
+                metric_column = self._detect_metric_column(query_lower, default="delta_views_count")
+                sql = (
+                    f"SELECT COALESCE(SUM(vs.{metric_column}), 0) "
+                    "FROM video_snapshots vs "
+                    "JOIN videos v ON v.id = vs.video_id "
+                    f"WHERE v.creator_id = '{creator_id}' "
+                    f"AND vs.created_at >= '{start_iso}' "
+                    f"AND vs.created_at < '{end_iso}'"
+                )
+                print(f"Generated creator time window query: {sql}")
+                return sql
+
             # Extract date range: "с 1 ноября 2025 по 5 ноября 2025"
             date_range_match = re.search(r'с\s+(\d+)\s+(ноября|ноября|декабря|января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября)\s+(\d{4})\s+по\s+(\d+)\s+(ноября|ноября|декабря|января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября)\s+(\d{4})', query_lower)
             
