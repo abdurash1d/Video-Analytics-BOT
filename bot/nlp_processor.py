@@ -119,6 +119,32 @@ class NLPProcessor:
                 print(f"Generated negative delta query: {sql}")
                 return sql
 
+        # Handle month/year queries: "в июне 2025 года"
+        import re
+        month_year_pattern = r'в\s+(январе|феврале|марте|апреле|мае|июне|июле|августе|сентябре|октябре|ноябре|декабре)\s+(\d{4})\s+года'
+        month_year_match = re.search(month_year_pattern, query_lower)
+        
+        if month_year_match:
+            month_map = {
+                'январе': 1, 'феврале': 2, 'марте': 3, 'апреле': 4,
+                'мае': 5, 'июне': 6, 'июле': 7, 'августе': 8,
+                'сентябре': 9, 'октябре': 10, 'ноябре': 11, 'декабре': 12
+            }
+            month_name = month_year_match.group(1)
+            year = month_year_match.group(2)
+            month_num = month_map.get(month_name, 6)
+            
+            # Check if asking for sum of views
+            if "суммарное" in query_lower or "сумма" in query_lower or "сумму" in query_lower:
+                sql = f"SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = {year} AND EXTRACT(MONTH FROM video_created_at) = {month_num}"
+                print(f"Generated month/year sum query: {sql}")
+                return sql
+            # Or count of videos
+            elif "сколько" in query_lower:
+                sql = f"SELECT COUNT(*) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = {year} AND EXTRACT(MONTH FROM video_created_at) = {month_num}"
+                print(f"Generated month/year count query: {sql}")
+                return sql
+
         # Handle creator_id queries with thresholds
         import re
         creator_id_pattern = r'id\s+([a-f0-9]{32})'
@@ -249,11 +275,33 @@ class NLPProcessor:
             else:
                 return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}'"
 
+        # Handle month/year queries: "в июне 2025 года" or "в июне 2025"
+        month_year_pattern = r'в\s+(январе|феврале|марте|апреле|мае|июне|июле|августе|сентябре|октябре|ноябре|декабре)\s+(\d{4})(?:\s+года)?'
+        month_year_match = re.search(month_year_pattern, query_lower)
+        
+        if month_year_match:
+            month_map = {
+                'январе': 1, 'феврале': 2, 'марте': 3, 'апреле': 4,
+                'мае': 5, 'июне': 6, 'июле': 7, 'августе': 8,
+                'сентябре': 9, 'октябре': 10, 'ноябре': 11, 'декабре': 12
+            }
+            month_name = month_year_match.group(1)
+            year = month_year_match.group(2)
+            month_num = month_map.get(month_name, 6)
+            
+            # Check if asking for sum of views
+            if "суммарное" in query_lower or "сумма" in query_lower or "сумму" in query_lower:
+                return f"SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = {year} AND EXTRACT(MONTH FROM video_created_at) = {month_num}"
+            # Or count of videos
+            elif "сколько" in query_lower:
+                return f"SELECT COUNT(*) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = {year} AND EXTRACT(MONTH FROM video_created_at) = {month_num}"
+
         # Handle negative delta queries
         if ("отрицательным" in query_lower or "отрицательное" in query_lower) and ("замер" in query_lower or "снапшот" in query_lower or "статистик" in query_lower):
             if "просмотров" in query_lower:
                 return "SELECT COUNT(*) FROM video_snapshots WHERE delta_views_count < 0"
 
+        # General patterns for common queries
         if "сколько всего видео" in query_lower or "total videos" in query_lower:
             return "SELECT COUNT(*) FROM videos"
         elif "больше 100" in query_lower and "просмотров" in query_lower:
@@ -262,6 +310,34 @@ class NLPProcessor:
             return "SELECT SUM(delta_views_count) FROM video_snapshots WHERE DATE(created_at) = '2025-11-28'"
         elif "новые просмотры" in query_lower and "27 ноября" in query_lower:
             return "SELECT COUNT(DISTINCT video_id) FROM video_snapshots WHERE DATE(created_at) = '2025-11-27' AND delta_views_count > 0"
+        
+        # General sum of views queries
+        if ("суммарное" in query_lower or "сумма" in query_lower or "сумму" in query_lower) and "просмотров" in query_lower:
+            # Check for date filters
+            if "2025" in query_lower:
+                # Try to extract month if mentioned
+                month_pattern = r'(январе|феврале|марте|апреле|мае|июне|июле|августе|сентябре|октябре|ноябре|декабре)'
+                month_match = re.search(month_pattern, query_lower)
+                if month_match:
+                    month_map = {
+                        'январе': 1, 'феврале': 2, 'марте': 3, 'апреле': 4,
+                        'мае': 5, 'июне': 6, 'июле': 7, 'августе': 8,
+                        'сентябре': 9, 'октябре': 10, 'ноябре': 11, 'декабре': 12
+                    }
+                    month_name = month_match.group(1)
+                    month_num = month_map.get(month_name, 6)
+                    year_match = re.search(r'(\d{4})', query_lower)
+                    year = year_match.group(1) if year_match else '2025'
+                    return f"SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = {year} AND EXTRACT(MONTH FROM video_created_at) = {month_num}"
+                else:
+                    # Just year filter
+                    year_match = re.search(r'(\d{4})', query_lower)
+                    if year_match:
+                        year = year_match.group(1)
+                        return f"SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = {year}"
+            else:
+                # No date filter, sum all views
+                return "SELECT SUM(views_count) FROM videos"
 
         return None
 
