@@ -111,6 +111,54 @@ class NLPProcessor:
                 print(f"Using test query mapping: {test_query} -> {sql}")
                 return sql
 
+        # Handle creator_id queries with thresholds
+        import re
+        creator_id_pattern = r'id\s+([a-f0-9]{32})'
+        creator_match = re.search(creator_id_pattern, user_query.lower())
+        
+        if creator_match:
+            creator_id = creator_match.group(1)
+            query_lower = user_query.lower()
+            
+            # Extract date range: "с 1 ноября 2025 по 5 ноября 2025"
+            date_range_match = re.search(r'с\s+(\d+)\s+(ноября|ноября|декабря|января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября)\s+(\d{4})\s+по\s+(\d+)\s+(ноября|ноября|декабря|января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября)\s+(\d{4})', query_lower)
+            
+            if date_range_match:
+                # Parse Russian month names to numbers
+                month_map = {
+                    'января': '01', 'февраля': '02', 'марта': '03', 'апреля': '04',
+                    'мая': '05', 'июня': '06', 'июля': '07', 'августа': '08',
+                    'сентября': '09', 'октября': '10', 'ноября': '11', 'декабря': '12'
+                }
+                
+                start_day = date_range_match.group(1)
+                start_month = month_map.get(date_range_match.group(2), '11')
+                start_year = date_range_match.group(3)
+                end_day = date_range_match.group(4)
+                end_month = month_map.get(date_range_match.group(5), '11')
+                end_year = date_range_match.group(6)
+                
+                start_date = f"{start_year}-{start_month}-{start_day.zfill(2)}"
+                end_date = f"{end_year}-{end_month}-{end_day.zfill(2)} 23:59:59"
+                
+                sql = f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND video_created_at >= '{start_date}' AND video_created_at <= '{end_date}'"
+                print(f"Generated creator date range query: {sql}")
+                return sql
+            
+            # Extract threshold number
+            threshold_match = re.search(r'больше\s+(\d+[\s\d]*)\s+просмотров', query_lower)
+            if threshold_match:
+                threshold_str = threshold_match.group(1).replace(' ', '')
+                threshold = int(threshold_str)
+                sql = f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND views_count > {threshold}"
+                print(f"Generated creator query: {sql}")
+                return sql
+            else:
+                # Just count videos for creator
+                sql = f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}'"
+                print(f"Generated creator count query: {sql}")
+                return sql
+
         # If not a test query, try OpenAI (but handle rate limits gracefully)
         if self.client is None:
             print("OpenAI client not available - using fallback")
@@ -151,7 +199,47 @@ class NLPProcessor:
 
     def _get_fallback_sql(self, user_query: str) -> Optional[str]:
         """Fallback SQL generation for common queries when OpenAI fails"""
+        import re
         query_lower = user_query.lower()
+
+        # Handle creator_id queries
+        creator_id_pattern = r'id\s+([a-f0-9]{32})'
+        creator_match = re.search(creator_id_pattern, query_lower)
+        
+        if creator_match:
+            creator_id = creator_match.group(1)
+            
+            # Extract date range: "с 1 ноября 2025 по 5 ноября 2025"
+            date_range_match = re.search(r'с\s+(\d+)\s+(ноября|ноября|декабря|января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября)\s+(\d{4})\s+по\s+(\d+)\s+(ноября|ноября|декабря|января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября)\s+(\d{4})', query_lower)
+            
+            if date_range_match:
+                # Parse Russian month names to numbers
+                month_map = {
+                    'января': '01', 'февраля': '02', 'марта': '03', 'апреля': '04',
+                    'мая': '05', 'июня': '06', 'июля': '07', 'августа': '08',
+                    'сентября': '09', 'октября': '10', 'ноября': '11', 'декабря': '12'
+                }
+                
+                start_day = date_range_match.group(1)
+                start_month = month_map.get(date_range_match.group(2), '11')
+                start_year = date_range_match.group(3)
+                end_day = date_range_match.group(4)
+                end_month = month_map.get(date_range_match.group(5), '11')
+                end_year = date_range_match.group(6)
+                
+                start_date = f"{start_year}-{start_month}-{start_day.zfill(2)}"
+                end_date = f"{end_year}-{end_month}-{end_day.zfill(2)} 23:59:59"
+                
+                return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND video_created_at >= '{start_date}' AND video_created_at <= '{end_date}'"
+            
+            # Extract threshold number
+            threshold_match = re.search(r'больше\s+(\d+[\s\d]*)\s+просмотров', query_lower)
+            if threshold_match:
+                threshold_str = threshold_match.group(1).replace(' ', '')
+                threshold = int(threshold_str)
+                return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND views_count > {threshold}"
+            else:
+                return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}'"
 
         if "сколько всего видео" in query_lower or "total videos" in query_lower:
             return "SELECT COUNT(*) FROM videos"
